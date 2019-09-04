@@ -6,7 +6,6 @@ import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.annotation.lifecycle.OnDisabled;
 import org.apache.nifi.annotation.lifecycle.OnEnabled;
-import org.apache.nifi.components.AllowableValue;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.controller.AbstractControllerService;
 import org.apache.nifi.controller.ConfigurationContext;
@@ -202,8 +201,7 @@ public class HikariCPConnectionPool extends AbstractControllerService implements
     @Override
     public Connection getConnection() throws ProcessException {
         try {
-            final Connection con = hikariDataSource.getConnection();
-            return con;
+            return hikariDataSource.getConnection();
         } catch (final SQLException e) {
             throw new ProcessException(e);
         }
