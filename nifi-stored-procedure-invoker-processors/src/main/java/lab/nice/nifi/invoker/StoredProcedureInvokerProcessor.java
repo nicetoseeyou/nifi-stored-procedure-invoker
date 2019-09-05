@@ -23,12 +23,9 @@ import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
-import org.apache.nifi.processor.io.OutputStreamCallback;
 import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.util.StopWatch;
 
-import java.io.IOException;
-import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
 import java.sql.CallableStatement;
 import java.sql.Connection;
@@ -143,10 +140,10 @@ import java.util.regex.Pattern;
                 + "In the event a dynamic property represents a property that was already set, "
                 + "its value will be override by the incoming FlowFile attribute.")
 public class StoredProcedureInvokerProcessor extends AbstractProcessor {
-    public static final String PROCEDURE_EXECUTE_DURATION = "procedure.execute.duration";
-    public static final String PROCEDURE_RETURN_RESULTSET_COUNT = "procedure.return.resultset.count";
-    public static final String PROCEDURE_RETURN_ROW_COUNT = "procedure.return.row.count";
-    public static final String PROCEDURE_RETURN_OUTPUT_COUNT = "procedure.return.output.count";
+    private static final String PROCEDURE_EXECUTE_DURATION = "procedure.execute.duration";
+    private static final String PROCEDURE_RETURN_RESULTSET_COUNT = "procedure.return.resultset.count";
+    private static final String PROCEDURE_RETURN_ROW_COUNT = "procedure.return.row.count";
+    private static final String PROCEDURE_RETURN_OUTPUT_COUNT = "procedure.return.output.count";
     private static final String STORED_PROCEDURE_STATEMENT_KEY = "stored.procedure.statement";
     private static final Pattern DYNAMIC_ATTRIBUTE_PATTERN = Pattern.compile("procedure\\.args\\.(in|out|inout)\\.(\\d+)\\.type");
     private static final Pattern NUMBER_PATTERN = Pattern.compile("-?\\d+");
@@ -248,7 +245,11 @@ public class StoredProcedureInvokerProcessor extends AbstractProcessor {
         if (processContext.getProperty(STORED_PROCEDURE_STATEMENT).isSet()) {
             procedure = processContext.getProperty(STORED_PROCEDURE_STATEMENT).evaluateAttributeExpressions(flowFile).getValue();
         } else {
-            procedure = flowFile.getAttribute(STORED_PROCEDURE_STATEMENT_KEY);
+            if (flowFile != null) {
+                procedure = flowFile.getAttribute(STORED_PROCEDURE_STATEMENT_KEY);
+            } else {
+                throw new ProcessException("Stored procedure statement must be specified.");
+            }
         }
         if (StringUtils.isBlank(procedure)) {
             throw new ProcessException("Stored Procedure Statement could not be empty.");
@@ -264,20 +265,21 @@ public class StoredProcedureInvokerProcessor extends AbstractProcessor {
                 inputParameter(callableStatement, flowFile.getAttributes(), outParameters);
             }
             boolean results = callableStatement.execute();
-            FlowFile resultSetFlowFile;
+            FlowFile resultSetFF;
             if (results || !outParameters.isEmpty()) {
                 if (flowFile == null) {
-                    resultSetFlowFile = processSession.create();
+                    resultSetFF = processSession.create();
                 } else {
-                    resultSetFlowFile = processSession.create(flowFile);
-                    resultSetFlowFile = processSession.putAllAttributes(resultSetFlowFile, flowFile.getAttributes());
+                    resultSetFF = processSession.create(flowFile);
+                    resultSetFF = processSession.putAllAttributes(resultSetFF, flowFile.getAttributes());
                 }
-                resultSetFlowFile = processSession.write(resultSetFlowFile, outputStream -> {
+                resultSetFF = processSession.write(resultSetFF, outputStream -> {
                     final ObjectMapper objectMapper = new ObjectMapper();
-                    try (final JsonGenerator jsonGenerator = objectMapper.getFactory().createGenerator(outputStream, JsonEncoding.UTF8)) {
+                    try (final JsonGenerator jsonGenerator = objectMapper.getFactory()
+                            .createGenerator(outputStream, JsonEncoding.UTF8)) {
                         boolean hasResultSet = results;
-                        if (hasResultSet && !outParameters.isEmpty()) {
-                            jsonGenerator.writeStartObject(); // start of return json
+                        jsonGenerator.writeStartObject(); // start of root json
+                        if (hasResultSet) {
                             jsonGenerator.writeArrayFieldStart("ResultSets"); //start of ResultSets
                             while (hasResultSet) {
                                 final ResultSet resultSet = callableStatement.getResultSet();
@@ -285,11 +287,11 @@ public class StoredProcedureInvokerProcessor extends AbstractProcessor {
                                 final int columnCount = resultSetMetaData.getColumnCount();
                                 jsonGenerator.writeStartArray(); //start of one ResultSet
                                 while (resultSet.next()) {
-                                    jsonGenerator.writeStartObject();//start of one row
+                                    jsonGenerator.writeStartObject();//start of row
                                     for (int i = 0; i <= columnCount; i++) {
                                         jsonGenerator.writeObjectField(resultSetMetaData.getColumnName(i), resultSet.getObject(i));
                                     }
-                                    jsonGenerator.writeEndObject();//end off one row
+                                    jsonGenerator.writeEndObject();//end of row
                                     resultMeta.incRowCount();
                                 }
                                 jsonGenerator.writeEndArray();//end of one ResultSet
@@ -302,48 +304,71 @@ public class StoredProcedureInvokerProcessor extends AbstractProcessor {
                                 }
                             }
                             jsonGenerator.writeEndArray(); //end of ResultSets
-                            if (!outParameters.isEmpty()) {
-                                jsonGenerator.writeObjectFieldStart("Output"); //start of output
-                                for (Map.Entry<Integer, OutputMeta> ome : outParameters.entrySet()) {
-                                    final Integer index = ome.getKey();
-                                    final OutputMeta meta = ome.getValue();
-                                    //find a better way to evaluate output with exact jdbc type
-                                    jsonGenerator.writeObjectField(meta.name, callableStatement.getObject(index));
-                                    resultMeta.incOutputCount();
-                                }
-                                jsonGenerator.writeEndObject();//end of output
-                            }
-                            jsonGenerator.writeEndObject();//end of return json
-                            jsonGenerator.flush();
                         }
+                        if (!outParameters.isEmpty()) {
+                            jsonGenerator.writeObjectFieldStart("Output"); //start of output
+                            for (Map.Entry<Integer, OutputMeta> ome : outParameters.entrySet()) {
+                                final Integer index = ome.getKey();
+                                final OutputMeta meta = ome.getValue();
+                                //find a better way to evaluate output with exact jdbc type
+                                jsonGenerator.writeObjectField(meta.name, callableStatement.getObject(index));
+                                resultMeta.incOutputCount();
+                            }
+                            jsonGenerator.writeEndObject();//end of output
+                        }
+                        jsonGenerator.writeEndObject();//end of root json
+                        jsonGenerator.flush();
                     } catch (SQLException e) {
                         throw new ProcessException(e);
                     }
                 });
                 long duration = stopWatch.getElapsed(TimeUnit.MILLISECONDS);
-                resultSetFlowFile = processSession.putAttribute(resultSetFlowFile, PROCEDURE_EXECUTE_DURATION,
+                resultSetFF = processSession.putAttribute(resultSetFF, PROCEDURE_EXECUTE_DURATION,
                         String.valueOf(duration));
-                resultSetFlowFile = processSession.putAttribute(resultSetFlowFile, PROCEDURE_RETURN_RESULTSET_COUNT,
+                resultSetFF = processSession.putAttribute(resultSetFF, PROCEDURE_RETURN_RESULTSET_COUNT,
                         String.valueOf(resultMeta.getResultSetCount()));
-                resultSetFlowFile = processSession.putAttribute(resultSetFlowFile, PROCEDURE_RETURN_ROW_COUNT,
+                resultSetFF = processSession.putAttribute(resultSetFF, PROCEDURE_RETURN_ROW_COUNT,
                         String.valueOf(resultMeta.getRowCount()));
-                resultSetFlowFile = processSession.putAttribute(resultSetFlowFile, PROCEDURE_RETURN_OUTPUT_COUNT,
+                resultSetFF = processSession.putAttribute(resultSetFF, PROCEDURE_RETURN_OUTPUT_COUNT,
                         String.valueOf(resultMeta.getOutputCount()));
-                processSession.getProvenanceReporter().modifyContent(resultSetFlowFile, "Procedure executed.", duration);
-                processSession.transfer(resultSetFlowFile, REL_SUCCESS);
-            }
-            //If we had at least one result then it's OK to drop the original file, but if we had no results then
-            //  pass the original flow file down the line to trigger downstream processors
-            if (flowFile != null) {
-                if (resultMeta.getResultSetCount() > 0 || resultMeta.getOutputCount() > 0) {
-                    processSession.remove(flowFile);
-                } else {
-                    flowFile = processSession.write(flowFile, new OutputStreamCallback() {
-                        @Override
-                        public void process(OutputStream outputStream) throws IOException {
+                processSession.getProvenanceReporter().modifyContent(resultSetFF, "Procedure executed. " + resultMeta, duration);
+                processSession.transfer(resultSetFF, REL_SUCCESS);
+            } else {
+                //If we had at least one result then it's OK to drop the original file, but if we had no results then
+                //  pass the original flow file down the line to trigger downstream processors
+                long duration = stopWatch.getElapsed(TimeUnit.MILLISECONDS);
+                if (flowFile != null) {
+                    if (resultMeta.getResultSetCount() > 0 || resultMeta.getOutputCount() > 0) {
+                        processSession.remove(flowFile);
+                    } else {
+                        flowFile = processSession.putAttribute(flowFile, PROCEDURE_EXECUTE_DURATION,
+                                String.valueOf(duration));
+                        flowFile = processSession.putAttribute(flowFile, PROCEDURE_RETURN_RESULTSET_COUNT,
+                                String.valueOf(resultMeta.getResultSetCount()));
+                        flowFile = processSession.putAttribute(flowFile, PROCEDURE_RETURN_ROW_COUNT,
+                                String.valueOf(resultMeta.getRowCount()));
+                        flowFile = processSession.putAttribute(flowFile, PROCEDURE_RETURN_OUTPUT_COUNT,
+                                String.valueOf(resultMeta.getOutputCount()));
+                        flowFile = processSession.write(flowFile, outputStream -> {
                             //do nothing
-                        }
+                        });
+                        processSession.getProvenanceReporter().modifyContent(flowFile, "Procedure executed." + resultMeta, duration);
+                        processSession.transfer(flowFile, REL_SUCCESS);
+                    }
+                } else {
+                    flowFile = processSession.create();
+                    flowFile = processSession.putAttribute(flowFile, PROCEDURE_EXECUTE_DURATION,
+                            String.valueOf(duration));
+                    flowFile = processSession.putAttribute(flowFile, PROCEDURE_RETURN_RESULTSET_COUNT,
+                            String.valueOf(resultMeta.getResultSetCount()));
+                    flowFile = processSession.putAttribute(flowFile, PROCEDURE_RETURN_ROW_COUNT,
+                            String.valueOf(resultMeta.getRowCount()));
+                    flowFile = processSession.putAttribute(flowFile, PROCEDURE_RETURN_OUTPUT_COUNT,
+                            String.valueOf(resultMeta.getOutputCount()));
+                    flowFile = processSession.write(flowFile, outputStream -> {
+                        //do nothing
                     });
+                    processSession.getProvenanceReporter().modifyContent(flowFile, "Procedure executed." + resultMeta, duration);
                     processSession.transfer(flowFile, REL_SUCCESS);
                 }
             }
@@ -391,17 +416,17 @@ public class StoredProcedureInvokerProcessor extends AbstractProcessor {
                     final String parameterFormat = attributes.getOrDefault(formatAttributeName, "");
                     try {
                         JdbcUtils.setParameter(callableStatement, valueAttributeName, parameterIndex, parameterValue, jdbcType, parameterFormat);
-                    } catch (final NumberFormatException nfe) {
-                        throw new SQLDataException("The value of the " + valueAttributeName + " is '" + parameterValue + "', which cannot be converted into the necessary data type", nfe);
-                    } catch (ParseException pe) {
-                        throw new SQLDataException("The value of the " + valueAttributeName + " is '" + parameterValue + "', which cannot be converted to a timestamp", pe);
-                    } catch (UnsupportedEncodingException uee) {
-                        throw new SQLDataException("The value of the " + valueAttributeName + " is '" + parameterValue + "', which cannot be converted to UTF-8", uee);
+                    } catch (final NumberFormatException e) {
+                        throw new SQLDataException("The value of the " + valueAttributeName + " is '" + parameterValue + "', which cannot be converted into the necessary data type", e);
+                    } catch (ParseException e) {
+                        throw new SQLDataException("The value of the " + valueAttributeName + " is '" + parameterValue + "', which cannot be converted to a timestamp", e);
+                    } catch (UnsupportedEncodingException e) {
+                        throw new SQLDataException("The value of the " + valueAttributeName + " is '" + parameterValue + "', which cannot be converted to UTF-8", e);
                     }
                 }
                 if (parameterType.equals("out") || parameterType.equals("inout")) {
                     final String nameAttribute = String.format("procedure.args.%d.%s.name", parameterIndex, parameterType);
-                    final String name = attributes.get(nameAttribute);
+                    final String name = attributes.getOrDefault(nameAttribute, parameterType + "-" + parameterIndex);
                     final OutputMeta outputMeta = new OutputMeta(name, jdbcType);
                     outParameters.put(parameterIndex, outputMeta);
                     callableStatement.registerOutParameter(parameterIndex, jdbcType);
@@ -469,6 +494,30 @@ public class StoredProcedureInvokerProcessor extends AbstractProcessor {
 
         int getOutputCount() {
             return outputCount;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            ResultMeta that = (ResultMeta) o;
+            return resultSetCount == that.resultSetCount &&
+                    rowCount == that.rowCount &&
+                    outputCount == that.outputCount;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(resultSetCount, rowCount, outputCount);
+        }
+
+        @Override
+        public String toString() {
+            return "Stored procedure return {" +
+                    "ResultSetCount=" + resultSetCount +
+                    ", RowCount=" + rowCount +
+                    ", OutputCount=" + outputCount +
+                    '}';
         }
     }
 }
