@@ -139,7 +139,7 @@ import java.util.regex.Pattern;
                 + "procedure.args.inout.N.type, procedure.args.inout.N.value, procedure.args.inout.N.format). "
                 + "In the event a dynamic property represents a property that was already set, "
                 + "its value will be override by the incoming FlowFile attribute.")
-public class StoredProcedureInvokerProcessor extends AbstractProcessor {
+public class ExecuteStoredProcedure extends AbstractProcessor {
     private static final String PROCEDURE_EXECUTE_DURATION = "procedure.execute.duration";
     private static final String PROCEDURE_RETURN_RESULTSET_COUNT = "procedure.return.resultset.count";
     private static final String PROCEDURE_RETURN_ROW_COUNT = "procedure.return.row.count";
@@ -194,7 +194,7 @@ public class StoredProcedureInvokerProcessor extends AbstractProcessor {
     private final Set<Relationship> relationships;
     private final List<PropertyDescriptor> propertyDescriptors;
 
-    public StoredProcedureInvokerProcessor() {
+    public ExecuteStoredProcedure() {
         final Set<Relationship> r = new HashSet<>();
         r.add(REL_SUCCESS);
         r.add(REL_FAILURE);
