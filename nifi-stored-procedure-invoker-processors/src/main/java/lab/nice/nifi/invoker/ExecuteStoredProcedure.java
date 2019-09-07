@@ -217,6 +217,18 @@ public class ExecuteStoredProcedure extends AbstractProcessor {
         return propertyDescriptors;
     }
 
+    @Override
+    protected PropertyDescriptor getSupportedDynamicPropertyDescriptor(String propertyDescriptorName) {
+        return new PropertyDescriptor.Builder()
+                .name(propertyDescriptorName)
+                .required(false)
+                .addValidator(StandardValidators.ATTRIBUTE_KEY_PROPERTY_NAME_VALIDATOR)
+                .expressionLanguageSupported(true)
+                .dynamic(true)
+                .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+                .build();
+    }
+
     @OnScheduled
     public void setup(final ProcessContext processContext) {
         // If the stored procedure statement is not set, then an incoming FlowFile is needed.
