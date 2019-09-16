@@ -21,7 +21,6 @@ import java.io.IOException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,20 +30,43 @@ public class TestExecuteStoredProcedure {
     private static final Logger LOGGER;
 
     private static final String TEST_TABLE_CUSTOMERS_CREATION = "CREATE TABLE IF NOT EXISTS customers (id INTEGER GENERATED ALWAYS AS IDENTITY(START WITH 1) PRIMARY KEY, name VARCHAR(255), age INTEGER)";
-    private static final String TEST_TABLE_CITY_CREATION = "CREATE TABLE IF NOT EXISTS city (id INTEGER GENERATED ALWAYS AS IDENTITY(START WITH 1) PRIMARY KEY, name VARCHAR(255), post_code VARCHAR(255))";
-    private static final String TEST_TABLE_CUSTOMERS_INSERT = "INSERT INTO customers (name, age) VALUES (?,?)";
-    private static final String TEST_TABLE_CITY_INSERT = "INSERT INTO city (name, post_code) VALUES ('Guangzhou', '0000')";
-    private static final String TEST_PROCEDURE_CREATION = "CREATE PROCEDURE two_res_new_customer(IN i_name VARCHAR(255), IN i_age INTEGER, OUT o_id INTEGER) MODIFIES SQL DATA DYNAMIC RESULT SETS 2 BEGIN ATOMIC DECLARE city_res CURSOR WITH RETURN FOR SELECT * FROM city FOR READ ONLY; DECLARE cus_res CURSOR WITH RETURN FOR SELECT * FROM customers FOR READ ONLY; INSERT INTO customers (name, age) VALUES (i_name, i_age); SET o_id = IDENTITY(); UPDATE city SET post_code = '0001' WHERE id = 1; OPEN cus_res; OPEN city_res; END";
-    private static final String TEST_PROCEDURE_CALL = "{CALL two_res_new_customer(?,?,?)}";
-    private static final String TEST_TABLE_TRUNCATE = "TRUNCATE TABLE customers";
-    private static final String TEST_TABLE_CITY_TRUNCATE = "TRUNCATE TABLE city";
+    private static final String TEST_TABLE_CUSTOMERS_INSERT = "INSERT INTO customers (name, age) VALUES (NULL, NULL)";
+    private static final String TEST_TABLE_CUSTOMERS_DROP = "DROP TABLE customers";
+
+    private static final String TEST_TABLE_CITY_CREATION = "CREATE TABLE IF NOT EXISTS address (id INTEGER PRIMARY KEY, city VARCHAR(255))";
+    private static final String TEST_TABLE_CITY_DROP = "DROP TABLE address";
+
+    private static final String TEST_TABLE_LOBS_CREATION = "CREATE TABLE IF NOT EXISTS all_lobs (id INTEGER GENERATED ALWAYS AS IDENTITY(START WITH 1) PRIMARY KEY, v_clob CLOB)";
+    private static final String TEST_TABLE_LOBS_INSERT = "INSERT INTO all_lobs (v_clob) VALUES ('abcdefghijklmnopqrstuvwxyz')";
+    private static final String TEST_TABLE_LOBS_DROP = "DROP TABLE all_lobs";
+
+    private static final String TEST_PROCEDURE_CREATION = "CREATE PROCEDURE two_res_new_customer (" +
+            "IN i_name VARCHAR(255), " +
+            "IN i_age INTEGER, " +
+            "IN i_city VARCHAR(255), " +
+            "OUT o_id INTEGER ) " +
+            "MODIFIES SQL DATA " +
+            "DYNAMIC RESULT SETS 3 " +
+            "BEGIN ATOMIC " +
+            "DECLARE temp_id INTEGER; " +
+            "INSERT INTO customers (name, age) VALUES (i_name, i_age); " +
+            "SET temp_id = IDENTITY(); " +
+            "SET o_id = temp_id; " +
+            "INSERT INTO address (id, city) VALUES (temp_id, i_city); " +
+            "INSERT INTO all_lobs (v_clob) VALUES (NULL); "+
+            "BEGIN ATOMIC " +
+            "DECLARE cus_res CURSOR WITH RETURN FOR SELECT * FROM customers FOR READ ONLY; " +
+            "DECLARE address_res CURSOR WITH RETURN FOR SELECT * FROM address FOR READ ONLY; " +
+            "DECLARE lobs_res CURSOR WITH RETURN FOR SELECT * FROM all_lobs FOR READ ONLY; " +
+            "OPEN cus_res; " +
+            "OPEN address_res; " +
+            "OPEN lobs_res; " +
+            "END; " +
+            "END";
+    private static final String TEST_PROCEDURE_CALL = "{CALL two_res_new_customer(?,?,?,?)}";
+    private static final String TEST_PROCEDURE_DROP = "DROP PROCEDURE two_res_new_customer";
 
     static {
-        System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "info");
-        System.setProperty("org.slf4j.simpleLogger.showDateTime", "true");
-        System.setProperty("org.slf4j.simpleLogger.log.nifi.io.nio", "debug");
-        System.setProperty("org.slf4j.simpleLogger.log.lab.nice.nifi.invoker.ExecuteStoredProcedure", "debug");
-        System.setProperty("org.slf4j.simpleLogger.log.lab.nice.nifi.invoker.TestExecuteStoredProcedure", "debug");
         LOGGER = LoggerFactory.getLogger(TestExecuteStoredProcedure.class);
     }
 
@@ -56,48 +78,48 @@ public class TestExecuteStoredProcedure {
     }
 
     @Before
-    public void setup() throws InitializationException, SQLException {
+    public void setUp() throws InitializationException, SQLException {
         final DBCPService dbcp = new DBCPServiceSimpleImpl();
         final Map<String, String> dbcpProperties = new HashMap<>();
+
+        // load test data to database
+        final Connection connection = dbcp.getConnection();
+        JdbcDummy.execute(connection, TEST_TABLE_CITY_CREATION);
+        JdbcDummy.execute(connection, TEST_TABLE_CUSTOMERS_CREATION);
+        JdbcDummy.execute(connection, TEST_TABLE_CUSTOMERS_INSERT);
+        JdbcDummy.execute(connection, TEST_TABLE_LOBS_CREATION);
+        JdbcDummy.execute(connection, TEST_TABLE_LOBS_INSERT);
+        JdbcDummy.execute(connection, TEST_PROCEDURE_CREATION);
+
+        LOGGER.info("test data loaded");
 
         runner = TestRunners.newTestRunner(ExecuteStoredProcedure.class);
         runner.addControllerService("dbcp", dbcp, dbcpProperties);
         runner.enableControllerService(dbcp);
         runner.setProperty(ExecuteStoredProcedure.DBCP_SERVICE, "dbcp");
-
-        // load test data to database
-        final Connection connection = ((DBCPService) runner.getControllerService("dbcp")).getConnection();
-        JdbcDummy.execute(connection, TEST_TABLE_CITY_CREATION);
-        JdbcDummy.execute(connection, TEST_TABLE_CITY_INSERT);
-        JdbcDummy.execute(connection, TEST_TABLE_CUSTOMERS_CREATION);
-        final List<Map<Integer, Object>> parameterList = new ArrayList<>();
-        final Map<Integer, Object> parameters = new HashMap<>();
-        parameters.put(1, "Will");
-        parameters.put(2, 18);
-        parameterList.add(parameters);
-        JdbcDummy.executeBatch(connection, TEST_TABLE_CUSTOMERS_INSERT, parameterList);
-        LOGGER.info("test data loaded");
     }
 
     @After
-    public void clean() throws SQLException {
+    public void tearDown() throws SQLException {
         final Connection connection = ((DBCPService) runner.getControllerService("dbcp")).getConnection();
-        //JdbcDummy.execute(connection, TEST_TABLE_TRUNCATE);
-        //JdbcDummy.execute(connection, TEST_TABLE_CITY_TRUNCATE);
+        JdbcDummy.execute(connection, TEST_PROCEDURE_DROP);
+        JdbcDummy.execute(connection, TEST_TABLE_CUSTOMERS_DROP);
+        JdbcDummy.execute(connection, TEST_TABLE_CITY_DROP);
+        JdbcDummy.execute(connection, TEST_TABLE_LOBS_DROP);
     }
 
     @Test
     public void testNoIncoming() throws SQLException, ClassNotFoundException, IOException, InitializationException {
-        final Connection connection = ((DBCPService) runner.getControllerService("dbcp")).getConnection();
-        JdbcDummy.execute(connection, TEST_PROCEDURE_CREATION);
         runner.setIncomingConnection(false);
         runner.setProperty(ExecuteStoredProcedure.STORED_PROCEDURE_STATEMENT, TEST_PROCEDURE_CALL);
         runner.setProperty("procedure.args.in.1.type", "12");
         runner.setProperty("procedure.args.in.1.value", "Tom");
         runner.setProperty("procedure.args.in.2.type", "4");
         runner.setProperty("procedure.args.in.2.value", "20");
-        runner.setProperty("procedure.args.out.3.type", "4");
-        runner.setProperty("procedure.args.out.3.name", "ID");
+        runner.setProperty("procedure.args.in.3.type", "12");
+        runner.setProperty("procedure.args.in.3.value", "Guangzhou");
+        runner.setProperty("procedure.args.out.4.type", "4");
+        runner.setProperty("procedure.args.out.4.name", "ID");
         invokeOnTrigger(null, null, false, null, false);
     }
 
