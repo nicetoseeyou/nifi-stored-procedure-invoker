@@ -27,13 +27,16 @@ import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.util.StopWatch;
 
 import java.io.IOException;
+import java.io.Reader;
 import java.io.UnsupportedEncodingException;
+import java.nio.CharBuffer;
 import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLDataException;
 import java.sql.SQLException;
+import java.sql.Types;
 import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -149,6 +152,7 @@ public class ExecuteStoredProcedure extends AbstractProcessor {
     private static final Pattern DYNAMIC_ATTRIBUTE_PATTERN = Pattern.compile("procedure\\.args\\.(in|out|inout)\\.(\\d+)\\.type");
     private static final Pattern NUMBER_PATTERN = Pattern.compile("-?\\d+");
     private static final Pattern LONG_PATTERN = Pattern.compile("^-?\\d{1,19}$");
+    private static final int DEFAULT_BUFFER_SIZE = 1024;
 
     // Relationships
     public static final Relationship REL_SUCCESS = new Relationship.Builder()
@@ -397,7 +401,26 @@ public class ExecuteStoredProcedure extends AbstractProcessor {
                 while (resultSet.next()) {
                     jsonGenerator.writeStartObject();//start of row
                     for (int i = 1; i <= columnCount; i++) {
-                        jsonGenerator.writeObjectField(resultSetMetaData.getColumnName(i), resultSet.getObject(i));
+                        if (resultSetMetaData.getColumnType(i) == Types.CLOB) {
+                            final Reader reader = resultSet.getCharacterStream(i);
+                            if (reader == null) {
+                                jsonGenerator.writeNullField(resultSetMetaData.getColumnName(i));
+                            } else {
+                                final StringBuffer stringBuffer = new StringBuffer();
+                                final CharBuffer charBuffer = CharBuffer.allocate(DEFAULT_BUFFER_SIZE);
+                                while (reader.read(charBuffer) != -1) {
+                                    charBuffer.flip();
+                                    while (charBuffer.hasRemaining()) {
+                                        stringBuffer.append(charBuffer.get());
+                                    }
+                                    charBuffer.compact();
+                                }
+                                jsonGenerator.writeStringField(resultSetMetaData.getColumnName(i), stringBuffer.toString());
+                                reader.close();
+                            }
+                        } else {
+                            jsonGenerator.writeObjectField(resultSetMetaData.getColumnName(i), resultSet.getObject(i));
+                        }
                     }
                     jsonGenerator.writeEndObject();//end of row
                     resultMeta.incRowCount();
