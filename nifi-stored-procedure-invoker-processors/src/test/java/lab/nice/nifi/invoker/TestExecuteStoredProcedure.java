@@ -37,7 +37,7 @@ public class TestExecuteStoredProcedure {
     private static final String TEST_TABLE_CITY_DROP = "DROP TABLE address";
 
     private static final String TEST_TABLE_LOBS_CREATION = "CREATE TABLE IF NOT EXISTS all_lobs (id INTEGER GENERATED ALWAYS AS IDENTITY(START WITH 1) PRIMARY KEY, v_clob CLOB)";
-    private static final String TEST_TABLE_LOBS_INSERT = "INSERT INTO all_lobs (v_clob) VALUES ('abcdefghijklmnopqrstuvwxyz')";
+    private static final String TEST_TABLE_LOBS_INSERT = "INSERT INTO all_lobs (v_clob) VALUES ('lab.nice.nifi.invoker.TestExecuteStoredProcedure')";
     private static final String TEST_TABLE_LOBS_DROP = "DROP TABLE all_lobs";
 
     private static final String TEST_PROCEDURE_CREATION = "CREATE PROCEDURE two_res_new_customer (" +
@@ -53,7 +53,7 @@ public class TestExecuteStoredProcedure {
             "SET temp_id = IDENTITY(); " +
             "SET o_id = temp_id; " +
             "INSERT INTO address (id, city) VALUES (temp_id, i_city); " +
-            "INSERT INTO all_lobs (v_clob) VALUES (NULL); "+
+            "INSERT INTO all_lobs (v_clob) VALUES ('lab.nice.nifi.invoker.ExecuteStoredProcedure'); "+
             "BEGIN ATOMIC " +
             "DECLARE cus_res CURSOR WITH RETURN FOR SELECT * FROM customers FOR READ ONLY; " +
             "DECLARE address_res CURSOR WITH RETURN FOR SELECT * FROM address FOR READ ONLY; " +
@@ -109,7 +109,7 @@ public class TestExecuteStoredProcedure {
     }
 
     @Test
-    public void testNoIncoming() throws SQLException, ClassNotFoundException, IOException, InitializationException {
+    public void testNoIncoming() throws IOException {
         runner.setIncomingConnection(false);
         runner.setProperty(ExecuteStoredProcedure.STORED_PROCEDURE_STATEMENT, TEST_PROCEDURE_CALL);
         runner.setProperty("procedure.args.in.1.type", "12");
@@ -124,7 +124,7 @@ public class TestExecuteStoredProcedure {
     }
 
     public void invokeOnTrigger(final Integer queryTimeout, final String query, final boolean incomingFlowFile, final Map<String, String> attrs, final boolean setQueryProperty)
-            throws InitializationException, ClassNotFoundException, SQLException, IOException {
+            throws IOException {
 
         if (queryTimeout != null) {
             runner.setProperty(ExecuteStoredProcedure.PROCEDURE_EXECUTION_TIMEOUT, queryTimeout.toString() + " secs");
@@ -147,41 +147,13 @@ public class TestExecuteStoredProcedure {
         runner.run();
         runner.assertAllFlowFilesTransferred(ExecuteStoredProcedure.REL_SUCCESS, 1);
         runner.assertAllFlowFilesContainAttribute(ExecuteStoredProcedure.REL_SUCCESS, ExecuteStoredProcedure.PROCEDURE_EXECUTE_DURATION);
-        runner.assertAllFlowFilesContainAttribute(ExecuteStoredProcedure.REL_SUCCESS, ExecuteStoredProcedure.PROCEDURE_RETURN_RESULTSET_COUNT);
-        runner.assertAllFlowFilesContainAttribute(ExecuteStoredProcedure.REL_SUCCESS, ExecuteStoredProcedure.PROCEDURE_RETURN_ROW_COUNT);
-        runner.assertAllFlowFilesContainAttribute(ExecuteStoredProcedure.REL_SUCCESS, ExecuteStoredProcedure.PROCEDURE_RETURN_OUTPUT_COUNT);
 
         final List<MockFlowFile> flowFiles = runner.getFlowFilesForRelationship(ExecuteStoredProcedure.REL_SUCCESS);
 
         final ObjectMapper objectMapper = new ObjectMapper();
         for (MockFlowFile flowFile : flowFiles) {
-            final WrapInt resultCount = new WrapInt("ResultsCount");
-            final WrapInt rowCount = new WrapInt("RowCount");
-            final WrapInt outputCount = new WrapInt("OutputCount");
             final JsonNode root = objectMapper.readTree(flowFile.toByteArray());
             LOGGER.info("{}", root);
-            final JsonNode results = root.path("Results");
-            final JsonNode outputs = root.path("Outputs");
-            if (!results.isMissingNode()) {
-                results.elements().forEachRemaining(node -> {
-                    if (node.isArray()) {
-                        node.forEach(row -> {
-                            LOGGER.info("Row: {}", row);
-                            rowCount.increase();
-                        });
-                    } else {
-                        LOGGER.info("UpdateCount: {}", node);
-                    }
-                    resultCount.increase();
-                });
-            }
-            if (!outputs.isMissingNode()) {
-                outputs.forEach(o -> {
-                    LOGGER.info("Output: {}", o);
-                    outputCount.increase();
-                });
-            }
-            LOGGER.info("{}, {}, {}", resultCount, rowCount, outputCount);
         }
     }
 
