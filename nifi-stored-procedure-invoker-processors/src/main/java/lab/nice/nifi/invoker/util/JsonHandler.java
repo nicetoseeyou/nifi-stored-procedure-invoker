@@ -1,8 +1,8 @@
 package lab.nice.nifi.invoker.util;
 
 import com.fasterxml.jackson.core.JsonGenerator;
-import lab.nice.nifi.invoker.common.AttributeConstant;
-import lab.nice.nifi.invoker.common.ProcedureParameter;
+import lab.nice.nifi.invoker.common.Parameter;
+import lab.nice.nifi.invoker.common.ParameterType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,27 +28,69 @@ public final class JsonHandler {
     private JsonHandler() {
     }
 
+    /**
+     * Streaming retrieve ResultSet(s) and output(s) inside a CallableStatement and write into JSON.
+     * All ResultSet(s) will be written into JSON wrapping array with field name {@link JsonHandler#RESULT_SET_HEADER} and
+     * each ResultSet will be written into JSON array inside this wrapping array. Rows inside ResultSet will be written as
+     * JSON object with all its select columns. And update count will be written as simple number in the top of the ResultSet
+     * wrapping array. Output(s) of the CallableStatement will be written in a wrapping JSON object with field name
+     * {@link JsonHandler#OUTPUT_HEADER} and each output will be written as JSON with field name (if not specified, a default name
+     * with prefix {@link JsonHandler#OUTPUT_PREFIX} with its index will be assigned).
+     *
+     * <pre>
+     * {
+     * 	"Results": [
+     * 		[{"ID": 1, "NAME": "Tom", "AGE": 21}],
+     * 		[{"ID": 2, "CITY": "Guangzhou"}]
+     * 	],
+     * 	"Outputs": {
+     * 		"ID": 2,
+     * 		"output_3": "output_3"
+     *        }
+     * }
+     * </pre>
+     *
+     * @param statement     the CallableStatement to retrieve
+     * @param jsonGenerator the JsonGenerator to write JSON
+     * @param parameters    the parameter list
+     * @throws IOException  if failed to retrieve CLOB/NCLOB output if any or failed to write JSON
+     * @throws SQLException if failed to retrieve outputs
+     */
     public static void retrieveCallableStatement(final CallableStatement statement, final JsonGenerator jsonGenerator,
-                                                 final List<ProcedureParameter> procedureParameters) {
-
+                                                 final List<Parameter> parameters) throws IOException, SQLException {
+        retrieveResults(statement, jsonGenerator);
+        retrieveOutputs(statement, jsonGenerator, parameters);
     }
 
+    /**
+     * Streaming retrieve CallableStatement outputs based on parameters. If any OUT/INOUT parameter given,
+     * will retrieve this OUT/INOUT parameter and write to JSON. If no name specified for the parameter,
+     * a default name with prefix {@link JsonHandler#OUTPUT_PREFIX} and its index will be assigned.
+     *
+     * @param statement     the CallableStatement to retrieve
+     * @param jsonGenerator the JsonGenerator to write JSON
+     * @param parameters    the parameter list
+     * @throws IOException  if failed to retrieve CLOB/NCLOB output if any or failed to write JSON
+     * @throws SQLException if failed to retrieve outputs
+     */
     public static void retrieveOutputs(final CallableStatement statement, final JsonGenerator jsonGenerator,
-                                       final List<ProcedureParameter> procedureParameters) throws IOException, SQLException {
-        if (null == procedureParameters && !procedureParameters.isEmpty()) {
+                                       final List<Parameter> parameters) throws IOException, SQLException {
+        if (null != parameters && !parameters.isEmpty()) {
             boolean isEmpty = true;
-            for (ProcedureParameter parameter : procedureParameters) {
-                if (AttributeConstant.PROCEDURE_TYPE_OUT.equals(parameter.getParameterType())
-                        || AttributeConstant.PROCEDURE_TYPE_INOUT.equals(parameter.getParameterType())) {
+            for (Parameter parameter : parameters) {
+                if (ParameterType.OUT.equals(parameter.getType())
+                        || ParameterType.INOUT.equals(parameter.getType())) {
                     if (isEmpty) {
                         jsonGenerator.writeObjectFieldStart(OUTPUT_HEADER);
                         isEmpty = false;
                     }
-                    String fieldName = parameter.getParameterName();
+                    String fieldName = parameter.getName();
                     if (Types.CLOB == parameter.getJdbcType().getVendorTypeNumber()) {
-                        writeJson(jsonGenerator, fieldName, statement.getCharacterStream(parameter.getParameterIndex()));
-                    }else if (Types.NCLOB == parameter.getJdbcType().getVendorTypeNumber()){
-                        writeJson(jsonGenerator, fieldName, statement.getNCharacterStream(parameter.getParameterIndex()));
+                        writeJson(jsonGenerator, fieldName, statement.getCharacterStream(parameter.getIndex()));
+                    } else if (Types.NCLOB == parameter.getJdbcType().getVendorTypeNumber()) {
+                        writeJson(jsonGenerator, fieldName, statement.getNCharacterStream(parameter.getIndex()));
+                    } else {
+                        writeJson(jsonGenerator, fieldName, statement.getObject(parameter.getIndex()));
                     }
                 }
             }
