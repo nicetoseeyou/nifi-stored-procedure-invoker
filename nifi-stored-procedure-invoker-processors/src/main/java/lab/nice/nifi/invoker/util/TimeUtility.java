@@ -8,6 +8,9 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 
+/**
+ * Time utility class
+ */
 public final class TimeUtility {
     private TimeUtility() {
     }
