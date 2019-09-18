@@ -3,6 +3,7 @@ package lab.nice.nifi.invoker.util;
 import com.fasterxml.jackson.core.JsonGenerator;
 import lab.nice.nifi.invoker.common.Parameter;
 import lab.nice.nifi.invoker.common.ParameterType;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,8 +16,13 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Types;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
+/**
+ * Handler to retrieve CallableStatement/ResultSet to write to JSON.
+ */
 public final class JsonHandler {
     private static final Logger LOGGER = LoggerFactory.getLogger(JsonHandler.class);
 
@@ -63,6 +69,46 @@ public final class JsonHandler {
     }
 
     /**
+     * Streaming retrieve ResultSet(s) and output(s) inside a CallableStatement and write into JSON.
+     * All ResultSet(s) will be written into JSON wrapping array with field name {@link JsonHandler#RESULT_SET_HEADER} and
+     * each ResultSet will be written into JSON array inside this wrapping array. Rows inside ResultSet will be written as
+     * JSON object with all its select columns. And update count will be written as simple number in the top of the ResultSet
+     * wrapping array. Output(s) of the CallableStatement will be written in a wrapping JSON object with field name
+     * {@link JsonHandler#OUTPUT_HEADER} and each output will be written as JSON with field name (if not specified, a default name
+     * with prefix {@link JsonHandler#OUTPUT_PREFIX} with its index will be assigned).
+     *
+     * <pre>
+     * {
+     * 	"Results": [
+     * 		[{"ID": 1, "NAME": "Tom", "AGE": 21}],
+     * 		[{"ID": 2, "CITY": "Guangzhou"}]
+     * 	],
+     * 	"Outputs": {
+     * 		"ID": 2,
+     * 		"output_3": "output_3"
+     *        }
+     * }
+     * </pre>
+     *
+     * @param statement     the CallableStatement to retrieve
+     * @param jsonGenerator the JsonGenerator to write JSON
+     * @param parameterMap  the parameters map
+     * @throws IOException  if failed to retrieve CLOB/NCLOB output if any or failed to write JSON
+     * @throws SQLException if failed to retrieve outputs
+     */
+    public static void retrieveCallableStatement(final CallableStatement statement, final JsonGenerator jsonGenerator,
+                                                 final Map<Integer, Parameter> parameterMap) throws IOException, SQLException {
+        final List<Parameter> parameters = new ArrayList<>();
+        parameters.addAll(parameterMap.values());
+        //start of root
+        jsonGenerator.writeStartObject();
+        retrieveResults(statement, jsonGenerator);
+        retrieveOutputs(statement, jsonGenerator, parameters);
+        jsonGenerator.writeEndObject();
+        //end of root
+    }
+
+    /**
      * Streaming retrieve CallableStatement outputs based on parameters. If any OUT/INOUT parameter given,
      * will retrieve this OUT/INOUT parameter and write to JSON. If no name specified for the parameter,
      * a default name with prefix {@link JsonHandler#OUTPUT_PREFIX} and its index will be assigned.
@@ -85,6 +131,9 @@ public final class JsonHandler {
                         isEmpty = false;
                     }
                     String fieldName = parameter.getName();
+                    if (StringUtils.isBlank(fieldName)) {
+                        fieldName = OUTPUT_PREFIX + parameter.getIndex();
+                    }
                     if (Types.CLOB == parameter.getJdbcType().getVendorTypeNumber()) {
                         writeJson(jsonGenerator, fieldName, statement.getCharacterStream(parameter.getIndex()));
                     } else if (Types.NCLOB == parameter.getJdbcType().getVendorTypeNumber()) {
@@ -112,6 +161,7 @@ public final class JsonHandler {
             throws SQLException, IOException {
         boolean hasResults = hasMoreResults(statement);
         if (hasResults) {
+            //start of results
             jsonGenerator.writeArrayFieldStart(RESULT_SET_HEADER);
             while (hasResults) {
                 if (statement.getUpdateCount() != -1) {
@@ -122,6 +172,7 @@ public final class JsonHandler {
                 hasResults = hasMoreResults(statement);
             }
             jsonGenerator.writeEndArray();
+            //end of results
         }
     }
 
@@ -138,8 +189,11 @@ public final class JsonHandler {
         if (resultSet.isBeforeFirst()) {
             final ResultSetMetaData resultSetMetaData = resultSet.getMetaData();
             final int columnCount = resultSetMetaData.getColumnCount();
+            //start of ResultSet
             jsonGenerator.writeStartArray();
             while (resultSet.next()) {
+                //start of row
+                jsonGenerator.writeStartObject();
                 for (int i = 1; i <= columnCount; i++) {
                     if (resultSetMetaData.getColumnType(i) == Types.CLOB) {
                         writeJson(jsonGenerator, resultSetMetaData.getColumnName(i), resultSet.getCharacterStream(i));
@@ -149,8 +203,11 @@ public final class JsonHandler {
                         writeJson(jsonGenerator, resultSetMetaData.getColumnName(i), resultSet.getObject(i));
                     }
                 }
+                jsonGenerator.writeEndObject();
+                //end of Row
             }
             jsonGenerator.writeEndArray();
+            //end of ResultSet
         } else {
             //empty ResultSet
             LOGGER.warn("Empty ResultSet, will skip it");
