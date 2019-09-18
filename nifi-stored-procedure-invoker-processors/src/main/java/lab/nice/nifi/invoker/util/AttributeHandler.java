@@ -4,6 +4,7 @@ package lab.nice.nifi.invoker.util;
 import lab.nice.nifi.invoker.common.AttributeConstant;
 import lab.nice.nifi.invoker.common.Parameter;
 import lab.nice.nifi.invoker.common.ParameterType;
+import lab.nice.nifi.invoker.common.ParameterTypes;
 import org.apache.commons.lang3.StringUtils;
 
 import java.util.Map;
@@ -36,13 +37,13 @@ public final class AttributeHandler {
                 final String formatAttribute = formatAttribute(parameterType, parameterIndex);
                 final String nameAttribute = nameAttribute(parameterType, parameterIndex);
 
-                if (AttributeConstant.PROCEDURE_TYPE_IN.equals(parameterType)) {
+                if (ParameterTypes.PROCEDURE_TYPE_IN.equals(parameterType)) {
                     inParameter(parameter, attributes.get(valueAttribute), attributes.get(formatAttribute));
                     parameter.setType(ParameterType.IN);
-                } else if (AttributeConstant.PROCEDURE_TYPE_OUT.equals(parameterType)) {
+                } else if (ParameterTypes.PROCEDURE_TYPE_OUT.equals(parameterType)) {
                     outParameter(parameter, attributes.get(nameAttribute));
                     parameter.setType(ParameterType.OUT);
-                } else if (AttributeConstant.PROCEDURE_TYPE_INOUT.equals(parameterType)) {
+                } else if (ParameterTypes.PROCEDURE_TYPE_INOUT.equals(parameterType)) {
                     inParameter(parameter, attributes.get(valueAttribute), attributes.get(formatAttribute));
                     outParameter(parameter, attributes.get(nameAttribute));
                     parameter.setType(ParameterType.INOUT);
