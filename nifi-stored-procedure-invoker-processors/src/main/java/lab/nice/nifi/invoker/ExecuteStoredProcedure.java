@@ -258,7 +258,6 @@ public class ExecuteStoredProcedure extends AbstractProcessor {
              final LobHandler lobHandler = new LobHandler(callableStatement)) {
             callableStatement.setQueryTimeout(timeout);
             JdbcHandler.setParameters(callableStatement, lobHandler, parameterMap);
-            getLogger().info("{}", new Object[]{callableStatement});
             callableStatement.execute();
             FlowFile resultSetFF;
             if (flowFile == null) {
