@@ -3,7 +3,11 @@ package lab.nice.nifi.invoker;
 import com.fasterxml.jackson.core.JsonEncoding;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lab.nice.nifi.invoker.util.JdbcUtils;
+import lab.nice.nifi.invoker.common.Parameter;
+import lab.nice.nifi.invoker.util.AttributeHandler;
+import lab.nice.nifi.invoker.util.JdbcHandler;
+import lab.nice.nifi.invoker.util.JsonHandler;
+import lab.nice.nifi.invoker.util.LobHandler;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.annotation.behavior.DynamicProperty;
 import org.apache.nifi.annotation.behavior.EventDriven;
@@ -27,16 +31,9 @@ import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.util.StopWatch;
 
 import java.io.IOException;
-import java.io.Reader;
-import java.io.UnsupportedEncodingException;
-import java.nio.CharBuffer;
 import java.sql.CallableStatement;
 import java.sql.Connection;
-import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
-import java.sql.SQLDataException;
 import java.sql.SQLException;
-import java.sql.Types;
 import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -44,11 +41,8 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 @EventDriven
 @InputRequirement(InputRequirement.Requirement.INPUT_ALLOWED)
@@ -122,19 +116,7 @@ import java.util.regex.Pattern;
 @WritesAttributes({
         @WritesAttribute(
                 attribute = "procedure.execute.duration",
-                description = "Duration of the stored procedure execution in milliseconds"),
-        @WritesAttribute(
-                attribute = "procedure.return.resultset.count",
-                description = "The total of the ResultSet returned by stored procedure"
-        ),
-        @WritesAttribute(
-                attribute = "procedure.return.row.count",
-                description = "The total row of all the ResultSets returned by stored procedure"
-        ),
-        @WritesAttribute(
-                attribute = "procedure.return.output.count",
-                description = "The total of the output returned by the stored procedure"
-        )
+                description = "Duration of the stored procedure execution in milliseconds")
 })
 @DynamicProperty(name = "The name of a stored procedure parameter configuration property",
         value = "The value of a stored procedure parameter configuration property",
@@ -145,14 +127,7 @@ import java.util.regex.Pattern;
                 + "its value will be override by the incoming FlowFile attribute.")
 public class ExecuteStoredProcedure extends AbstractProcessor {
     public static final String PROCEDURE_EXECUTE_DURATION = "procedure.execute.duration";
-    public static final String PROCEDURE_RETURN_RESULTSET_COUNT = "procedure.return.resultset.count";
-    public static final String PROCEDURE_RETURN_ROW_COUNT = "procedure.return.row.count";
-    public static final String PROCEDURE_RETURN_OUTPUT_COUNT = "procedure.return.output.count";
     private static final String STORED_PROCEDURE_STATEMENT_KEY = "stored.procedure.statement";
-    private static final Pattern DYNAMIC_ATTRIBUTE_PATTERN = Pattern.compile("procedure\\.args\\.(in|out|inout)\\.(\\d+)\\.type");
-    private static final Pattern NUMBER_PATTERN = Pattern.compile("-?\\d+");
-    private static final Pattern LONG_PATTERN = Pattern.compile("^-?\\d{1,19}$");
-    private static final int DEFAULT_BUFFER_SIZE = 1024;
 
     // Relationships
     public static final Relationship REL_SUCCESS = new Relationship.Builder()
@@ -235,7 +210,7 @@ public class ExecuteStoredProcedure extends AbstractProcessor {
     }
 
     @OnScheduled
-    public void setup(final ProcessContext processContext) {
+    public void setUp(final ProcessContext processContext) {
         // If the stored procedure statement is not set, then an incoming FlowFile is needed.
         // Otherwise fail the initialization
         if (!processContext.getProperty(STORED_PROCEDURE_STATEMENT).isSet() && !processContext.hasIncomingConnection()) {
@@ -271,99 +246,40 @@ public class ExecuteStoredProcedure extends AbstractProcessor {
         if (StringUtils.isBlank(procedure)) {
             throw new ProcessException("Stored Procedure Statement could not be empty.");
         }
-        final Map<Integer, OutputMeta> outParameters = new HashMap<>();
-        final ResultMeta resultMeta = new ResultMeta();
+        final ObjectMapper objectMapper = new ObjectMapper();
+        final Map<String, String> attributes = processContext.getAllProperties();
+        final Map<Integer, Parameter> parameterMap = new HashMap<>();
+        AttributeHandler.retrieveProcedureParameter(attributes, parameterMap);
+        if (null != flowFile) {
+            AttributeHandler.retrieveProcedureParameter(flowFile.getAttributes(), parameterMap);
+        }
         try (final Connection connection = dbcpService.getConnection();
-             final CallableStatement callableStatement = connection.prepareCall(procedure)) {
+             final CallableStatement callableStatement = connection.prepareCall(procedure);
+             final LobHandler lobHandler = new LobHandler(callableStatement)) {
             callableStatement.setQueryTimeout(timeout);
-            final Map<String, String> attributes = processContext.getAllProperties();
-            inputParameter(callableStatement, attributes, outParameters);
-            if (flowFile != null) {
-                inputParameter(callableStatement, flowFile.getAttributes(), outParameters);
-            }
-            boolean results;
+            JdbcHandler.setParameters(callableStatement, lobHandler, parameterMap);
+            getLogger().info("{}", new Object[]{callableStatement});
             callableStatement.execute();
-            if (callableStatement.getMoreResults() || callableStatement.getUpdateCount() != -1) {
-                results = true;
-            } else {
-                results = false;
-            }
             FlowFile resultSetFF;
-            if (results || !outParameters.isEmpty()) {
-                if (flowFile == null) {
-                    resultSetFF = processSession.create();
-                } else {
-                    resultSetFF = processSession.create(flowFile);
-                    resultSetFF = processSession.putAllAttributes(resultSetFF, flowFile.getAttributes());
-                }
-                resultSetFF = processSession.write(resultSetFF, outputStream -> {
-                    final ObjectMapper objectMapper = new ObjectMapper();
-                    try (final JsonGenerator jsonGenerator = objectMapper.getFactory()
-                            .createGenerator(outputStream, JsonEncoding.UTF8)) {
-                        jsonGenerator.writeStartObject(); // start of root json
-                        if (results) {
-                            retrieveResultSets(callableStatement, jsonGenerator, resultMeta);
-                        }
-                        if (!outParameters.isEmpty()) {
-                            retrieveOutputs(callableStatement, jsonGenerator, outParameters, resultMeta);
-                        }
-                        jsonGenerator.writeEndObject();//end of root json
-                        jsonGenerator.flush();
-                    } catch (SQLException e) {
-                        throw new ProcessException(e);
-                    }
-                });
-                long duration = stopWatch.getElapsed(TimeUnit.MILLISECONDS);
-                resultSetFF = processSession.putAttribute(resultSetFF, PROCEDURE_EXECUTE_DURATION,
-                        String.valueOf(duration));
-                resultSetFF = processSession.putAttribute(resultSetFF, PROCEDURE_RETURN_RESULTSET_COUNT,
-                        String.valueOf(resultMeta.getResultSetCount()));
-                resultSetFF = processSession.putAttribute(resultSetFF, PROCEDURE_RETURN_ROW_COUNT,
-                        String.valueOf(resultMeta.getRowCount()));
-                resultSetFF = processSession.putAttribute(resultSetFF, PROCEDURE_RETURN_OUTPUT_COUNT,
-                        String.valueOf(resultMeta.getOutputCount()));
-                processSession.getProvenanceReporter().modifyContent(resultSetFF, "Procedure executed. " + resultMeta, duration);
-                processSession.transfer(resultSetFF, REL_SUCCESS);
+            if (flowFile == null) {
+                resultSetFF = processSession.create();
             } else {
-                //If we had at least one result then it's OK to drop the original file, but if we had no results then
-                //  pass the original flow file down the line to trigger downstream processors
-                long duration = stopWatch.getElapsed(TimeUnit.MILLISECONDS);
-                if (flowFile != null) {
-                    if (resultMeta.getResultSetCount() > 0 || resultMeta.getOutputCount() > 0) {
-                        processSession.remove(flowFile);
-                    } else {
-                        flowFile = processSession.putAttribute(flowFile, PROCEDURE_EXECUTE_DURATION,
-                                String.valueOf(duration));
-                        flowFile = processSession.putAttribute(flowFile, PROCEDURE_RETURN_RESULTSET_COUNT,
-                                String.valueOf(resultMeta.getResultSetCount()));
-                        flowFile = processSession.putAttribute(flowFile, PROCEDURE_RETURN_ROW_COUNT,
-                                String.valueOf(resultMeta.getRowCount()));
-                        flowFile = processSession.putAttribute(flowFile, PROCEDURE_RETURN_OUTPUT_COUNT,
-                                String.valueOf(resultMeta.getOutputCount()));
-                        flowFile = processSession.write(flowFile, outputStream -> {
-                            //do nothing
-                        });
-                        processSession.getProvenanceReporter().modifyContent(flowFile, "Procedure executed." + resultMeta, duration);
-                        processSession.transfer(flowFile, REL_SUCCESS);
-                    }
-                } else {
-                    flowFile = processSession.create();
-                    flowFile = processSession.putAttribute(flowFile, PROCEDURE_EXECUTE_DURATION,
-                            String.valueOf(duration));
-                    flowFile = processSession.putAttribute(flowFile, PROCEDURE_RETURN_RESULTSET_COUNT,
-                            String.valueOf(resultMeta.getResultSetCount()));
-                    flowFile = processSession.putAttribute(flowFile, PROCEDURE_RETURN_ROW_COUNT,
-                            String.valueOf(resultMeta.getRowCount()));
-                    flowFile = processSession.putAttribute(flowFile, PROCEDURE_RETURN_OUTPUT_COUNT,
-                            String.valueOf(resultMeta.getOutputCount()));
-                    flowFile = processSession.write(flowFile, outputStream -> {
-                        //do nothing
-                    });
-                    processSession.getProvenanceReporter().modifyContent(flowFile, "Procedure executed." + resultMeta, duration);
-                    processSession.transfer(flowFile, REL_SUCCESS);
-                }
+                resultSetFF = processSession.create(flowFile);
+                resultSetFF = processSession.putAllAttributes(resultSetFF, flowFile.getAttributes());
             }
-        } catch (final ProcessException | SQLException e) {
+            resultSetFF = processSession.write(resultSetFF, outputStream -> {
+                try (final JsonGenerator jsonGenerator = objectMapper.getFactory()
+                        .createGenerator(outputStream, JsonEncoding.UTF8)) {
+                    JsonHandler.retrieveCallableStatement(callableStatement, jsonGenerator, parameterMap);
+                } catch (SQLException e) {
+                    throw new ProcessException(e);
+                }
+            });
+            long duration = stopWatch.getElapsed(TimeUnit.MILLISECONDS);
+            resultSetFF = processSession.putAttribute(resultSetFF, PROCEDURE_EXECUTE_DURATION, String.valueOf(duration));
+            processSession.getProvenanceReporter().modifyContent(resultSetFF, "Procedure executed. ", duration);
+            processSession.transfer(resultSetFF, REL_SUCCESS);
+        } catch (final ProcessException | SQLException | ParseException | IOException e) {
             //If we had at least one result then it's OK to drop the original file, but if we had no results then
             //  pass the original flow file down the line to trigger downstream processors
             if (flowFile == null) {
@@ -383,198 +299,6 @@ public class ExecuteStoredProcedure extends AbstractProcessor {
                 }
                 processSession.transfer(flowFile, REL_FAILURE);
             }
-        }
-    }
-
-    private void retrieveResultSets(final CallableStatement callableStatement, final JsonGenerator jsonGenerator,
-                                    final ResultMeta resultMeta) throws IOException, SQLException {
-        boolean hasResultSet = true;
-        jsonGenerator.writeArrayFieldStart("Results"); //start of ResultSets
-        while (hasResultSet) {
-            if (callableStatement.getUpdateCount() != -1) {
-                jsonGenerator.writeObject(callableStatement.getUpdateCount());
-            } else {
-                final ResultSet resultSet = callableStatement.getResultSet();
-                final ResultSetMetaData resultSetMetaData = resultSet.getMetaData();
-                final int columnCount = resultSetMetaData.getColumnCount();
-                jsonGenerator.writeStartArray(); //start of one ResultSet
-                while (resultSet.next()) {
-                    jsonGenerator.writeStartObject();//start of row
-                    for (int i = 1; i <= columnCount; i++) {
-                        if (resultSetMetaData.getColumnType(i) == Types.CLOB) {
-                            final Reader reader = resultSet.getCharacterStream(i);
-                            if (reader == null) {
-                                jsonGenerator.writeNullField(resultSetMetaData.getColumnName(i));
-                            } else {
-                                final StringBuffer stringBuffer = new StringBuffer();
-                                final CharBuffer charBuffer = CharBuffer.allocate(DEFAULT_BUFFER_SIZE);
-                                while (reader.read(charBuffer) != -1) {
-                                    charBuffer.flip();
-                                    while (charBuffer.hasRemaining()) {
-                                        stringBuffer.append(charBuffer.get());
-                                    }
-                                    charBuffer.compact();
-                                }
-                                jsonGenerator.writeStringField(resultSetMetaData.getColumnName(i), stringBuffer.toString());
-                                reader.close();
-                            }
-                        } else {
-                            jsonGenerator.writeObjectField(resultSetMetaData.getColumnName(i), resultSet.getObject(i));
-                        }
-                    }
-                    jsonGenerator.writeEndObject();//end of row
-                    resultMeta.incRowCount();
-                }
-                jsonGenerator.writeEndArray();//end of one ResultSet
-                resultMeta.incResultSetCount();
-            }
-            try {
-                hasResultSet = callableStatement.getMoreResults() || callableStatement.getUpdateCount() != -1;
-            } catch (SQLException e) {
-                getLogger().warn("No more ResultSet.", e);
-                hasResultSet = false;
-            }
-        }
-        jsonGenerator.writeEndArray(); //end of Results
-    }
-
-    private void retrieveOutputs(final CallableStatement callableStatement, final JsonGenerator jsonGenerator,
-                                 final Map<Integer, OutputMeta> outParameters, final ResultMeta resultMeta)
-            throws IOException, SQLException {
-        jsonGenerator.writeObjectFieldStart("Outputs"); //start of output
-        for (Map.Entry<Integer, OutputMeta> ome : outParameters.entrySet()) {
-            final Integer index = ome.getKey();
-            final OutputMeta meta = ome.getValue();
-            //find a better way to evaluate output with exact jdbc type
-            jsonGenerator.writeObjectField(meta.name, callableStatement.getObject(index));
-            resultMeta.incOutputCount();
-        }
-        jsonGenerator.writeEndObject();//end of output
-    }
-
-    private void inputParameter(final CallableStatement callableStatement, final Map<String, String> attributes,
-                                final Map<Integer, OutputMeta> outParameters) throws SQLException {
-        for (Map.Entry<String, String> entry : attributes.entrySet()) {
-            final String key = entry.getKey();
-            final Matcher dynamicMatcher = DYNAMIC_ATTRIBUTE_PATTERN.matcher(key);
-            if (dynamicMatcher.matches()) {
-                final boolean isNumeric = NUMBER_PATTERN.matcher(entry.getValue()).matches();
-                if (!isNumeric) {
-                    throw new SQLDataException("Value of the " + key + " attribute is '" + entry.getValue()
-                            + "', which is not a valid JDBC numeral type");
-                }
-                final String parameterType = dynamicMatcher.group(1);
-                final Integer parameterIndex = Integer.parseInt(dynamicMatcher.group(2));
-                final int jdbcType = Integer.parseInt(entry.getValue());
-                if (parameterType.equals("in") || parameterType.equals("inout")) {
-                    final String valueAttributeName = String.format("procedure.args.%s.%d.value", parameterType, parameterIndex);
-                    final String parameterValue = attributes.get(valueAttributeName);
-                    final String formatAttributeName = String.format("procedure.args.%s.%d.format", parameterType, parameterIndex);
-                    final String parameterFormat = attributes.getOrDefault(formatAttributeName, "");
-                    try {
-                        JdbcUtils.setParameter(callableStatement, valueAttributeName, parameterIndex, parameterValue, jdbcType, parameterFormat);
-                    } catch (final NumberFormatException e) {
-                        throw new SQLDataException("The value of the " + valueAttributeName + " is '" + parameterValue + "', which cannot be converted into the necessary data type", e);
-                    } catch (ParseException e) {
-                        throw new SQLDataException("The value of the " + valueAttributeName + " is '" + parameterValue + "', which cannot be converted to a timestamp", e);
-                    } catch (UnsupportedEncodingException e) {
-                        throw new SQLDataException("The value of the " + valueAttributeName + " is '" + parameterValue + "', which cannot be converted to UTF-8", e);
-                    }
-                }
-                if (parameterType.equals("out") || parameterType.equals("inout")) {
-                    final String nameAttribute = String.format("procedure.args.%s.%d.name", parameterType, parameterIndex);
-                    final String name = attributes.getOrDefault(nameAttribute, parameterType + "-" + parameterIndex);
-                    final OutputMeta outputMeta = new OutputMeta(name, jdbcType);
-                    outParameters.put(parameterIndex, outputMeta);
-                    callableStatement.registerOutParameter(parameterIndex, jdbcType);
-                }
-            }
-        }
-    }
-
-    static class OutputMeta {
-        final String name;
-        final Integer jdbcType;
-
-        OutputMeta(final String name, final Integer jdbcType) {
-            this.name = name;
-            this.jdbcType = jdbcType;
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-            OutputMeta that = (OutputMeta) o;
-            return Objects.equals(name, that.name) &&
-                    Objects.equals(jdbcType, that.jdbcType);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(name, jdbcType);
-        }
-
-        @Override
-        public String toString() {
-            return "OutputMeta{" +
-                    "name='" + name + '\'' +
-                    ", jdbcType=" + jdbcType +
-                    '}';
-        }
-    }
-
-    static class ResultMeta {
-        private int resultSetCount = 0;
-        private int rowCount = 0;
-        private int outputCount = 0;
-
-        void incResultSetCount() {
-            this.resultSetCount++;
-        }
-
-        void incRowCount() {
-            this.rowCount++;
-        }
-
-        void incOutputCount() {
-            this.outputCount++;
-        }
-
-        int getResultSetCount() {
-            return resultSetCount;
-        }
-
-        int getRowCount() {
-            return rowCount;
-        }
-
-        int getOutputCount() {
-            return outputCount;
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-            ResultMeta that = (ResultMeta) o;
-            return resultSetCount == that.resultSetCount &&
-                    rowCount == that.rowCount &&
-                    outputCount == that.outputCount;
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(resultSetCount, rowCount, outputCount);
-        }
-
-        @Override
-        public String toString() {
-            return "Stored procedure return {" +
-                    "ResultSetCount=" + resultSetCount +
-                    ", RowCount=" + rowCount +
-                    ", OutputCount=" + outputCount +
-                    '}';
         }
     }
 }
