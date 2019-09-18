@@ -5,14 +5,14 @@ import java.util.Objects;
 
 public class Parameter {
     private ParameterType type;
-    private Integer index;
+    private final Integer index;
     private JDBCType jdbcType;
     private String value;
     private String format;
     private String name;
 
     public Parameter(final String type, final Integer index, final Integer jdbcType) {
-        this.type = ParameterType.valueOf(type);
+        this.type = ParameterType.from(type);
         this.index = index;
         this.jdbcType = JDBCType.valueOf(jdbcType);
     }
@@ -29,16 +29,14 @@ public class Parameter {
         return index;
     }
 
-    public void setIndex(final Integer index) {
-        this.index = index;
-    }
-
     public JDBCType getJdbcType() {
         return jdbcType;
     }
 
-    public void setJdbcType(final JDBCType jdbcType) {
-        this.jdbcType = jdbcType;
+    public void setJdbcType(final Integer jdbcType) {
+        if (this.jdbcType.getVendorTypeNumber() != jdbcType){
+            this.jdbcType = JDBCType.valueOf(jdbcType);
+        }
     }
 
     public String getValue() {
