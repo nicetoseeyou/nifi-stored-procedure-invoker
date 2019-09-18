@@ -10,6 +10,10 @@ import org.apache.commons.lang3.StringUtils;
 import java.util.Map;
 import java.util.regex.Matcher;
 
+/**
+ * Handler to retrieve stored procedure parameters from NiFi processor properties or FlowFile attributes.
+ * All stored procedure parameters will be wrapped into built-in parameters.
+ */
 public final class AttributeHandler {
     private AttributeHandler() {
     }
@@ -26,29 +30,37 @@ public final class AttributeHandler {
             for (Map.Entry<String, String> entry : attributes.entrySet()) {
                 final String attributeName = entry.getKey();
                 final Matcher matcher = AttributeConstant.PROCEDURE_TYPE_ATTRIBUTE.matcher(attributeName);
-                final String parameterType = matcher.group(1);
-                final Integer parameterIndex = Integer.parseInt(matcher.group(2));
-                final Integer jdbcType = Integer.parseInt(entry.getValue());
+                if (matcher.matches()) {
+                    final String parameterType = matcher.group(1);
+                    final Integer parameterIndex = Integer.parseInt(matcher.group(2));
+                    final Integer jdbcType = Integer.parseInt(entry.getValue());
 
-                final Parameter parameter =
-                        parameters.getOrDefault(parameterIndex, new Parameter(parameterType, parameterIndex, jdbcType));
+                    Parameter parameter = parameters.get(parameterIndex);
 
-                final String valueAttribute = valueAttribute(parameterType, parameterIndex);
-                final String formatAttribute = formatAttribute(parameterType, parameterIndex);
-                final String nameAttribute = nameAttribute(parameterType, parameterIndex);
+                    if (parameter == null) {
+                        parameter = new Parameter(parameterType, parameterIndex, jdbcType);
+                        parameters.put(parameterIndex, parameter);
+                    } else {
+                        parameter.setJdbcType(jdbcType);
+                    }
 
-                if (ParameterTypes.PROCEDURE_TYPE_IN.equals(parameterType)) {
-                    inParameter(parameter, attributes.get(valueAttribute), attributes.get(formatAttribute));
-                    parameter.setType(ParameterType.IN);
-                } else if (ParameterTypes.PROCEDURE_TYPE_OUT.equals(parameterType)) {
-                    outParameter(parameter, attributes.get(nameAttribute));
-                    parameter.setType(ParameterType.OUT);
-                } else if (ParameterTypes.PROCEDURE_TYPE_INOUT.equals(parameterType)) {
-                    inParameter(parameter, attributes.get(valueAttribute), attributes.get(formatAttribute));
-                    outParameter(parameter, attributes.get(nameAttribute));
-                    parameter.setType(ParameterType.INOUT);
-                } else {
-                    //do nothing, should never be
+                    final String valueAttribute = valueAttribute(parameterType, parameterIndex);
+                    final String formatAttribute = formatAttribute(parameterType, parameterIndex);
+                    final String nameAttribute = nameAttribute(parameterType, parameterIndex);
+
+                    if (ParameterTypes.PROCEDURE_TYPE_IN.equals(parameterType)) {
+                        inParameter(parameter, attributes.get(valueAttribute), attributes.get(formatAttribute));
+                        parameter.setType(ParameterType.IN);
+                    } else if (ParameterTypes.PROCEDURE_TYPE_OUT.equals(parameterType)) {
+                        outParameter(parameter, attributes.get(nameAttribute));
+                        parameter.setType(ParameterType.OUT);
+                    } else if (ParameterTypes.PROCEDURE_TYPE_INOUT.equals(parameterType)) {
+                        inParameter(parameter, attributes.get(valueAttribute), attributes.get(formatAttribute));
+                        outParameter(parameter, attributes.get(nameAttribute));
+                        parameter.setType(ParameterType.INOUT);
+                    } else {
+                        //do nothing, should never be
+                    }
                 }
             }
         }
