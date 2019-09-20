@@ -247,7 +247,7 @@ public class ExecuteStoredProcedure extends AbstractProcessor {
             throw new ProcessException("Stored Procedure Statement could not be empty.");
         }
         final ObjectMapper objectMapper = new ObjectMapper();
-        final Map<String, String> attributes = processContext.getAllProperties();
+        final Map<String, String> attributes = evaluateProperties(processContext, flowFile);
         final Map<Integer, Parameter> parameterMap = new HashMap<>();
         AttributeHandler.retrieveProcedureParameter(attributes, parameterMap);
         if (null != flowFile) {
@@ -299,5 +299,17 @@ public class ExecuteStoredProcedure extends AbstractProcessor {
                 processSession.transfer(flowFile, REL_FAILURE);
             }
         }
+    }
+
+    private Map<String, String> evaluateProperties(final ProcessContext processContext, final FlowFile flowFile) {
+        final Map<String, String> map = new HashMap<>();
+        processContext.getProperties().forEach((p, v) -> {
+            if (p.isDynamic() && p.isExpressionLanguageSupported()) {
+                map.put(p.getName(), processContext.getProperty(p).evaluateAttributeExpressions(flowFile).getValue());
+            } else {
+                map.put(p.getName(), v);
+            }
+        });
+        return map;
     }
 }
