@@ -199,7 +199,7 @@ public final class JdbcHandler {
                         }
                         break;
                     default:
-                        statement.setObject(parameter.getIndex(), parameter.getValue(), parameter.getJdbcType());
+                        statement.setObject(parameter.getIndex(), parameter.getValue(), parameter.getJdbcType().getVendorTypeNumber());
                 }
             }
         } else {
@@ -216,7 +216,7 @@ public final class JdbcHandler {
      */
     public static void registerOutput(final CallableStatement statement, final Parameter parameter) throws SQLException {
         if (ParameterType.OUT.equals(parameter.getType()) || ParameterType.INOUT.equals(parameter.getType())) {
-            statement.registerOutParameter(parameter.getIndex(), parameter.getJdbcType());
+            statement.registerOutParameter(parameter.getIndex(), parameter.getJdbcType().getVendorTypeNumber());
         } else {
             return;
         }
