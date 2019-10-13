@@ -13,3 +13,4 @@ buildNumber.properties
 
 .idea/
 *.iml
+*.flattened-pom.xml

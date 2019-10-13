@@ -6,7 +6,7 @@
     <parent>
         <groupId>lab.nice</groupId>
         <artifactId>nifi-stored-procedure-invoker</artifactId>
-        <version>1.0.0-SNAPSHOT</version>
+        <version>${revision}</version>
     </parent>
 
     <artifactId>nifi-stored-procedure-invoker-nar</artifactId>
@@ -22,6 +22,7 @@
         <dependency>
             <groupId>lab.nice</groupId>
             <artifactId>nifi-stored-procedure-invoker-processors</artifactId>
+            <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
